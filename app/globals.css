@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+
+html, body {
+  background: #0E1116;
+  color: #E6E9EF;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: rgba(61, 214, 196, 0.25); }
+
+/* thin instrument-style scrollbars */
+* { scrollbar-width: thin; scrollbar-color: #2A3243 transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: #2A3243; border-radius: 4px; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}

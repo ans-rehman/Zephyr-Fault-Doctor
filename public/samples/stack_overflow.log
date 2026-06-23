@@ -1,0 +1,10 @@
+*** Booting Zephyr OS build v3.6.0 ***
+[00:00:00.001,000] <inf> main: app started
+[00:00:02.412,000] <err> os: ***** MPU FAULT *****
+[00:00:02.412,000] <err> os:   Stacking error (context area might be not valid)
+[00:00:02.412,000] <err> os: r0/a1:  0x20000a18  r1/a2:  0x00000050
+[00:00:02.412,000] <err> os: r12/ip: 0x00000000  lr:     0x08001a23
+[00:00:02.412,000] <err> os: Faulting instruction address (r15/pc): 0x08001a40
+[00:00:02.412,000] <err> os: >>> ZEPHYR FATAL ERROR 2: Stack overflow on CPU 0
+[00:00:02.412,000] <err> os: Current thread: 0x20000200 (sensor_wq)
+[00:00:02.412,000] <err> os: Halting system

@@ -1,0 +1,6 @@
+*** Booting Zephyr OS build v3.6.0 ***
+[00:00:00.500,000] <inf> net: iface up
+ASSERTION FAIL [k_is_in_isr() == 0] @ WEST_TOPDIR/zephyr/kernel/sched.c:1289
+[00:00:00.501,000] <err> os: >>> ZEPHYR FATAL ERROR 3: Kernel oops on CPU 0
+[00:00:00.501,000] <err> os: Current thread: 0x20000080 (idle 00)
+[00:00:00.501,000] <err> os: Halting system
