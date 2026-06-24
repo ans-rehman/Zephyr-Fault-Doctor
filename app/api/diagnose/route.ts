@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { parseZephyrLog } from "@/lib/zephyrParser";
 import { analyze } from "@/lib/agents";
+import { selectRelevantDatasheet } from "@/lib/relevance";
 import { Provider } from "@/lib/providers";
 
 export const runtime = "nodejs";
@@ -41,12 +42,23 @@ export async function POST(req: NextRequest) {
         // Stage 1 — deterministic parse (no LLM, fully reliable)
         send({ type: "step", id: "parse", status: "running" });
         const parsed = parseZephyrLog(log);
+
+        // Trim the datasheet locally to only fault-relevant sections (saves tokens)
+        const trim = selectRelevantDatasheet(datasheet || "", parsed, 4000);
+
         send({ type: "step", id: "parse", status: "done", data: {
           summary: parsed.summary,
           faults: parsed.faults,
           assertions: parsed.assertions,
           registers: parsed.registers,
           counts: parsed.counts,
+          context: datasheet
+            ? {
+                originalChars: trim.originalChars,
+                selectedChars: trim.selectedChars,
+                tokensSaved: trim.tokensSaved,
+              }
+            : null,
         }});
 
         if (!parsed.hasFatal && parsed.counts.warn === 0) {
@@ -61,7 +73,7 @@ export async function POST(req: NextRequest) {
         // Stage 2-4 — one grounded call performs triage + diagnosis + critic
         // (collapsed into a single request to stay within free-tier limits).
         send({ type: "step", id: "triage", status: "running" });
-        const a = await analyze(provider, apiKey, model || "", parsed, datasheet || "");
+        const a = await analyze(provider, apiKey, model || "", parsed, trim.selected);
         send({ type: "step", id: "triage", status: "done", data: a.triage });
 
         await tick(250);

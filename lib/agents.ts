@@ -1,5 +1,5 @@
 import { ParseResult } from "./zephyrParser";
-import { knowledgeContext } from "./zephyrKnowledge";
+import { knowledgeContext, selectKnowledge } from "./zephyrKnowledge";
 import { callJSON, callText, Provider } from "./providers";
 
 function evidenceBlock(parsed: ParseResult): string {
@@ -83,12 +83,16 @@ export async function analyze(
     '{ "triage": {"category":string,"confidence":number,"rationale":string}, ' +
     '"diagnosis": {"rootCause":string,"evidence":[{"claim":string,"source":"log"|"datasheet"|"zephyr-docs","ref":string}],"fix":{"kind":"kconfig"|"devicetree"|"code"|"investigation","title":string,"content":string,"explanation":string},"alternatives":[string]}, ' +
     '"critic": {"verdict":"supported"|"needs-more-evidence"|"speculative","confidence":number,"caveats":[string],"agree":boolean} }';
+  const descriptor = [
+    ...parsed.faults.map((f) => `${f.faultType} ${f.reasonText ?? ""}`),
+    ...parsed.assertions.map((a) => a.expression),
+  ].join(" ");
   const prompt = [
     `Parsed evidence from the Zephyr log:\n${evidenceBlock(parsed)}`,
     datasheetText.trim()
-      ? `Datasheet excerpt (memory map, registers, clocks, IRQ numbers; cite as source "datasheet"):\n${datasheetText.slice(0, 12000)}`
+      ? `Relevant datasheet excerpt (memory map, registers, clocks, IRQ numbers; cite as source "datasheet"):\n${datasheetText.slice(0, 6000)}`
       : "No datasheet provided.",
-    `Grounding knowledge (documented Zephyr behavior):\n${knowledgeContext()}`,
+    `Grounding knowledge (documented Zephyr behavior):\n${knowledgeContext(selectKnowledge(descriptor))}`,
   ].join("\n\n---\n\n");
   return callJSON<AnalysisResult>(provider, apiKey, model, system, prompt);
 }

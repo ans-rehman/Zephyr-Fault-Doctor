@@ -96,12 +96,31 @@ export const ZEPHYR_KNOWLEDGE: KnowledgeEntry[] = [
   },
 ];
 
-export function knowledgeContext(): string {
-  return ZEPHYR_KNOWLEDGE.map(
-    (k) =>
-      `### ${k.signature}\n` +
-      `Likely causes: ${k.likelyCauses.join("; ")}\n` +
-      `Fix levers: ${k.fixLevers.join("; ")}\n` +
-      `Reference: ${k.docs}`
-  ).join("\n\n");
+export function knowledgeContext(entries: KnowledgeEntry[] = ZEPHYR_KNOWLEDGE): string {
+  return entries
+    .map(
+      (k) =>
+        `### ${k.signature}\n` +
+        `Likely causes: ${k.likelyCauses.join("; ")}\n` +
+        `Fix levers: ${k.fixLevers.join("; ")}\n` +
+        `Reference: ${k.docs}`
+    )
+    .join("\n\n");
+}
+
+// Pick only the knowledge entries relevant to the parsed fault, to keep the
+// grounding block small. Falls back to all entries if nothing matches.
+export function selectKnowledge(descriptor: string): KnowledgeEntry[] {
+  const d = (descriptor || "").toLowerCase();
+  if (!d.trim()) return ZEPHYR_KNOWLEDGE;
+  const tokens = d.split(/[^a-z0-9]+/).filter((w) => w.length >= 3);
+  const scored = ZEPHYR_KNOWLEDGE.map((k) => {
+    const sig = k.signature.toLowerCase();
+    let score = 0;
+    for (const t of tokens) if (sig.includes(t)) score++;
+    return { k, score };
+  });
+  const hits = scored.filter((s) => s.score > 0).sort((a, b) => b.score - a.score);
+  if (!hits.length) return ZEPHYR_KNOWLEDGE;
+  return hits.slice(0, 3).map((s) => s.k);
 }

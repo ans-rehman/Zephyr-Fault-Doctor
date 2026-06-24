@@ -48,7 +48,8 @@ async function extractPdfText(file: File): Promise<string> {
     const content = await page.getTextContent();
     out += content.items.map((it: any) => it.str).join(" ") + "\n";
   }
-  return out;
+  // light cleanup; the server does the heavier relevance trimming
+  return out.replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function Badge({ verdict }: { verdict?: string }) {
@@ -526,6 +527,17 @@ export default function Home() {
                 <span className="text-warn">{steps.parse.data.counts.warn} wrn</span>
                 <span className="text-muted">{steps.parse.data.counts.info} inf</span>
               </div>
+              {steps.parse.data.context && (
+                <p className="text-[11px] text-trace/80 font-mono mt-2">
+                  datasheet trimmed {steps.parse.data.context.originalChars.toLocaleString()} →{" "}
+                  {steps.parse.data.context.selectedChars.toLocaleString()} chars
+                  {steps.parse.data.context.tokensSaved > 0 && (
+                    <span className="text-faint">
+                      {" "}· ~{steps.parse.data.context.tokensSaved.toLocaleString()} tokens saved
+                    </span>
+                  )}
+                </p>
+              )}
             </div>
           )}
 
