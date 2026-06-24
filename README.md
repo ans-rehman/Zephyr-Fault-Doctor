@@ -20,16 +20,40 @@ A general LLM will read a log and *guess*. This pins the answer to reality:
 3. **A critic gate.** Every fix is reviewed against the evidence and labeled
    *supported / needs-more-evidence / speculative*. It is allowed to say "not enough
    evidence" — which is the honest answer a confident chatbot won't give.
+4. **Token-smart context.** Rather than dumping a whole datasheet into the prompt,
+   `lib/relevance.ts` cleans, chunks, and selects only the fault-relevant sections, and
+   only the matching Zephyr knowledge entries are included. Big manuals stay cheap.
 
 ## Agent pipeline
 
 ```
-log ──> [parse] ──> [triage] ──> [diagnose + fix] ──> [critic] ──> report ──> [follow-up Q&A]
-        (regex)     (Gemini)     (Gemini, grounded)   (Gemini)
+log ──> [parse + datasheet trim] ──> [analyze] ──> report ──> [follow-up Q&A]
+        (regex, local, 0 tokens)     (1 LLM call:
+                                       triage + diagnose + critic)
 ```
 
-Each stage streams to the UI as it completes (NDJSON), so the agentic workflow is
+The parse stage is pure local code (regex extraction + relevance trimming, no tokens).
+The triage, diagnosis, and critic roles are then performed in a **single grounded LLM
+call** — collapsing three requests into one keeps usage inside free-tier rate limits.
+Each stage still streams to the UI as it resolves (NDJSON), so the agentic workflow is
 visible while it runs.
+
+## Token efficiency
+
+LLM cost here is dominated by datasheet text, so the app minimizes it locally before any
+request is sent (`lib/relevance.ts`):
+
+- **Clean** — collapse whitespace and strip repeated page headers/footers.
+- **Chunk + select** — score paragraphs against the actual fault (registers like BFAR/CFSR,
+  terms like "stack"/"NVIC"/"memory map"; fault-specific terms weighted 3×, generic anchors
+  1×, repetition capped so filler can't win), and send only the top sections (~4k chars).
+- **Targeted grounding** — include only the Zephyr knowledge entries matching the fault,
+  not all of them.
+
+In a test this trimmed a 16,559-character datasheet to 267 characters of exactly the
+relevant sections (memory map, BFAR/CFSR, NVIC) — roughly 4,000 tokens saved on a single
+run, far more on a multi-hundred-page manual. The UI shows the saving live
+(`datasheet trimmed 16,559 → 267 chars · ~4,000 tokens saved`).
 
 ## Stack
 
