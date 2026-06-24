@@ -34,18 +34,27 @@ visible while it runs.
 ## Stack
 
 - Next.js 14 (App Router) — deployed on Vercel
-- Google Gemini via `@google/generative-ai`
+- Gemini / OpenAI / Anthropic via a uniform REST adapter (`lib/providers.ts`)
 - `pdfjs-dist` for client-side datasheet text extraction
 - Tailwind CSS
 
-## Bring your own key
+## Bring your own key — any of three providers
 
-The app does **not** ship with an API key. Each user pastes their own Gemini key into
-the key field in the UI; the app verifies it live (a green "connected" dot, with the
-list of usable models), stores it only in that browser's `localStorage`, and sends it
-straight to Gemini per request. Nothing is billed to the deployer.
+The app ships with **no API keys**. The user picks a provider from a dropdown and
+pastes their own key:
 
-Get a free key at https://aistudio.google.com/apikey.
+| Provider | Key prefix | Get a key |
+|---|---|---|
+| Google Gemini | `AIza…` | https://aistudio.google.com/apikey |
+| OpenAI (ChatGPT) | `sk-…` | https://platform.openai.com/api-keys |
+| Anthropic (Claude) | `sk-ant-…` | https://console.anthropic.com/settings/keys |
+
+The key is verified live (a green "connected" dot plus the list of usable models for
+that key), stored only in that browser's `localStorage` per provider, and sent straight
+to the chosen provider per request. The whole agent pipeline is provider-agnostic — a
+single `lib/providers.ts` adapter normalizes each API so the rest of the app doesn't
+care which model answered. Gemini is the default (this is a Google ecosystem build);
+OpenAI and Claude are fallbacks, handy when a user has no Gemini quota.
 
 ## Run locally
 
@@ -58,7 +67,7 @@ npm run dev                     # http://localhost:3000, then paste your key in 
 
 1. Push this repo to GitHub.
 2. Import it in Vercel.
-3. No required environment variables (optionally set `GEMINI_MODEL` as a fallback default).
+3. No environment variables required — users bring their own keys in the UI.
 4. Deploy. The API routes run on the Node.js runtime (`maxDuration = 60`).
 
 ## Try it

@@ -1,31 +1,6 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { ParseResult } from "./zephyrParser";
 import { knowledgeContext } from "./zephyrKnowledge";
-
-const DEFAULT_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
-
-function client(apiKey: string) {
-  if (!apiKey) throw new Error("No Gemini API key provided");
-  return new GoogleGenerativeAI(apiKey);
-}
-
-// Ask Gemini for JSON and parse defensively (strip code fences if present).
-async function askJSON<T>(
-  apiKey: string,
-  model: string,
-  prompt: string,
-  system: string
-): Promise<T> {
-  const m = client(apiKey).getGenerativeModel({
-    model: model || DEFAULT_MODEL,
-    systemInstruction: system,
-    generationConfig: { responseMimeType: "application/json", temperature: 0.2 },
-  });
-  const res = await m.generateContent(prompt);
-  const text = res.response.text().trim();
-  const clean = text.replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
-  return JSON.parse(clean) as T;
-}
+import { callJSON, callText, Provider } from "./providers";
 
 function evidenceBlock(parsed: ParseResult): string {
   const faultLines = parsed.faults
@@ -54,23 +29,15 @@ function evidenceBlock(parsed: ParseResult): string {
 }
 
 export interface TriageResult {
-  category: string; // e.g. "Stack overflow", "NULL pointer dereference"
-  confidence: number; // 0..1
+  category: string;
+  confidence: number;
   rationale: string;
-}
-
-export async function triage(apiKey: string, model: string, parsed: ParseResult): Promise<TriageResult> {
-  const system =
-    "You are a Zephyr RTOS fault triage expert. Classify the failure from parsed evidence only. " +
-    "Do not invent register values or facts not present. Respond as JSON with keys: category, confidence (0-1), rationale.";
-  const prompt = `Parsed evidence from the Zephyr log:\n\n${evidenceBlock(parsed)}\n\nClassify the most likely failure category.`;
-  return askJSON<TriageResult>(apiKey, model, prompt, system);
 }
 
 export interface EvidenceCitation {
   claim: string;
   source: "log" | "datasheet" | "zephyr-docs";
-  ref: string; // log line text, datasheet snippet, or doc reference
+  ref: string;
 }
 
 export interface DiagnosisResult {
@@ -79,34 +46,10 @@ export interface DiagnosisResult {
   fix: {
     kind: "kconfig" | "devicetree" | "code" | "investigation";
     title: string;
-    content: string; // the actual snippet / commands
+    content: string;
     explanation: string;
   };
   alternatives: string[];
-}
-
-export async function diagnose(
-  apiKey: string,
-  model: string,
-  parsed: ParseResult,
-  triageResult: TriageResult,
-  datasheetText: string
-): Promise<DiagnosisResult> {
-  const system =
-    "You are a senior Zephyr RTOS firmware engineer. Produce a grounded root-cause analysis and a concrete fix. " +
-    "Rules: (1) Every claim in `evidence` must cite a real log line, a datasheet passage, or Zephyr docs — never fabricate. " +
-    "(2) The fix must be a real Zephyr artifact: a Kconfig change (prj.conf), a devicetree overlay, or a code patch. " +
-    "(3) If evidence is insufficient, set fix.kind to 'investigation' and give the exact commands to gather more (e.g. addr2line, CONFIG_THREAD_ANALYZER). " +
-    "Respond as JSON: { rootCause, evidence:[{claim, source, ref}], fix:{kind, title, content, explanation}, alternatives:[string] }.";
-  const prompt = [
-    `Triage: ${triageResult.category} (confidence ${triageResult.confidence}). ${triageResult.rationale}`,
-    `Parsed evidence:\n${evidenceBlock(parsed)}`,
-    datasheetText.trim()
-      ? `Datasheet excerpt (use for memory map, registers, clocks, IRQ numbers; cite as source "datasheet"):\n${datasheetText.slice(0, 12000)}`
-      : "No datasheet provided.",
-    `Grounding knowledge (Zephyr documented behavior):\n${knowledgeContext()}`,
-  ].join("\n\n---\n\n");
-  return askJSON<DiagnosisResult>(apiKey, model, prompt, system);
 }
 
 export interface CriticResult {
@@ -116,27 +59,43 @@ export interface CriticResult {
   agree: boolean;
 }
 
-export async function critic(
+export interface AnalysisResult {
+  triage: TriageResult;
+  diagnosis: DiagnosisResult;
+  critic: CriticResult;
+}
+
+// One grounded call performs all three roles. Collapsing triage+diagnose+critic
+// into a single request keeps usage inside free-tier rate limits.
+export async function analyze(
+  provider: Provider,
   apiKey: string,
   model: string,
   parsed: ParseResult,
-  diagnosis: DiagnosisResult
-): Promise<CriticResult> {
+  datasheetText: string
+): Promise<AnalysisResult> {
   const system =
-    "You are a skeptical reviewer. Check whether the proposed fix is actually supported by the parsed log evidence. " +
-    "Be honest: if the diagnosis leaps beyond the evidence, say so. " +
-    "Respond as JSON: { verdict: 'supported'|'needs-more-evidence'|'speculative', confidence (0-1), caveats:[string], agree:boolean }.";
+    "You are a panel of three Zephyr RTOS experts working a single fault: a TRIAGE engineer, a DIAGNOSIS engineer, and a skeptical CRITIC. " +
+    "Reason only from the parsed evidence and the grounding knowledge — never invent register values, APIs, or Kconfig symbols. " +
+    "The fix must be a real Zephyr artifact (prj.conf Kconfig, a devicetree overlay, or a code patch); if evidence is thin, set fix.kind='investigation' and give exact commands (addr2line, CONFIG_THREAD_ANALYZER). " +
+    "The CRITIC must independently judge whether the fix is supported by the evidence and may disagree. " +
+    "Respond with ONLY a JSON object of this exact shape: " +
+    '{ "triage": {"category":string,"confidence":number,"rationale":string}, ' +
+    '"diagnosis": {"rootCause":string,"evidence":[{"claim":string,"source":"log"|"datasheet"|"zephyr-docs","ref":string}],"fix":{"kind":"kconfig"|"devicetree"|"code"|"investigation","title":string,"content":string,"explanation":string},"alternatives":[string]}, ' +
+    '"critic": {"verdict":"supported"|"needs-more-evidence"|"speculative","confidence":number,"caveats":[string],"agree":boolean} }';
   const prompt = [
-    `Parsed evidence:\n${evidenceBlock(parsed)}`,
-    `Proposed root cause: ${diagnosis.rootCause}`,
-    `Proposed fix (${diagnosis.fix.kind}): ${diagnosis.fix.title}\n${diagnosis.fix.content}`,
-    `Cited evidence: ${diagnosis.evidence.map((e) => `[${e.source}] ${e.claim}`).join(" | ")}`,
-  ].join("\n\n");
-  return askJSON<CriticResult>(apiKey, model, prompt, system);
+    `Parsed evidence from the Zephyr log:\n${evidenceBlock(parsed)}`,
+    datasheetText.trim()
+      ? `Datasheet excerpt (memory map, registers, clocks, IRQ numbers; cite as source "datasheet"):\n${datasheetText.slice(0, 12000)}`
+      : "No datasheet provided.",
+    `Grounding knowledge (documented Zephyr behavior):\n${knowledgeContext()}`,
+  ].join("\n\n---\n\n");
+  return callJSON<AnalysisResult>(provider, apiKey, model, system, prompt);
 }
 
 // Follow-up Q&A over the same context (the "Q&A assistant" part of the theme).
 export async function followUp(
+  provider: Provider,
   apiKey: string,
   model: string,
   question: string,
@@ -144,13 +103,9 @@ export async function followUp(
   diagnosis: DiagnosisResult,
   datasheetText: string
 ): Promise<string> {
-  const m = client(apiKey).getGenerativeModel({
-    model: model || DEFAULT_MODEL,
-    systemInstruction:
-      "You are a Zephyr RTOS expert answering a follow-up about a specific diagnosed fault. " +
-      "Stay grounded in the evidence and the diagnosis. If you don't know, say so and suggest how to find out.",
-    generationConfig: { temperature: 0.3 },
-  });
+  const system =
+    "You are a Zephyr RTOS expert answering a follow-up about a specific diagnosed fault. " +
+    "Stay grounded in the evidence and the diagnosis. If you don't know, say so and suggest how to find out.";
   const prompt = [
     `Evidence:\n${evidenceBlock(parsed)}`,
     `Diagnosis: ${diagnosis.rootCause}`,
@@ -160,6 +115,5 @@ export async function followUp(
   ]
     .filter(Boolean)
     .join("\n\n");
-  const res = await m.generateContent(prompt);
-  return res.response.text();
+  return callText(provider, apiKey, model, system, prompt);
 }

@@ -1,20 +1,24 @@
 import { NextRequest } from "next/server";
 import { parseZephyrLog } from "@/lib/zephyrParser";
-import { triage, diagnose, critic } from "@/lib/agents";
+import { analyze } from "@/lib/agents";
+import { Provider } from "@/lib/providers";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
+const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 export async function POST(req: NextRequest) {
-  const { log, datasheet, apiKey, model } = (await req.json()) as {
+  const { log, datasheet, apiKey, model, provider } = (await req.json()) as {
     log: string;
     datasheet?: string;
     apiKey?: string;
     model?: string;
+    provider: Provider;
   };
 
   if (!apiKey || !apiKey.trim()) {
-    return new Response(JSON.stringify({ error: "Add your Gemini API key first." }), {
+    return new Response(JSON.stringify({ error: "Add your API key first." }), {
       status: 400,
       headers: { "content-type": "application/json" },
     });
@@ -54,22 +58,23 @@ export async function POST(req: NextRequest) {
           return;
         }
 
-        // Stage 2 — triage
+        // Stage 2-4 — one grounded call performs triage + diagnosis + critic
+        // (collapsed into a single request to stay within free-tier limits).
         send({ type: "step", id: "triage", status: "running" });
-        const t = await triage(apiKey, model || "", parsed);
-        send({ type: "step", id: "triage", status: "done", data: t });
+        const a = await analyze(provider, apiKey, model || "", parsed, datasheet || "");
+        send({ type: "step", id: "triage", status: "done", data: a.triage });
 
-        // Stage 3 — diagnose + fix
+        await tick(250);
         send({ type: "step", id: "diagnose", status: "running" });
-        const d = await diagnose(apiKey, model || "", parsed, t, datasheet || "");
-        send({ type: "step", id: "diagnose", status: "done", data: d });
+        await tick(150);
+        send({ type: "step", id: "diagnose", status: "done", data: a.diagnosis });
 
-        // Stage 4 — critic gate
+        await tick(150);
         send({ type: "step", id: "critic", status: "running" });
-        const c = await critic(apiKey, model || "", parsed, d);
-        send({ type: "step", id: "critic", status: "done", data: c });
+        await tick(150);
+        send({ type: "step", id: "critic", status: "done", data: a.critic });
 
-        send({ type: "result", report: { parsed, triage: t, diagnosis: d, critic: c } });
+        send({ type: "result", report: { parsed, triage: a.triage, diagnosis: a.diagnosis, critic: a.critic } });
         controller.close();
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Unexpected error";

@@ -1,6 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import type { Provider } from "@/lib/providers";
+
+const PROVIDER_UI: { id: Provider; label: string; hint: string; url: string }[] = [
+  { id: "gemini", label: "Google Gemini", hint: "AIza…", url: "https://aistudio.google.com/apikey" },
+  { id: "openai", label: "OpenAI (ChatGPT)", hint: "sk-…", url: "https://platform.openai.com/api-keys" },
+  { id: "anthropic", label: "Anthropic (Claude)", hint: "sk-ant-…", url: "https://console.anthropic.com/settings/keys" },
+];
 
 type StepId = "parse" | "triage" | "diagnose" | "critic";
 type Status = "idle" | "running" | "done";
@@ -57,7 +64,8 @@ function Badge({ verdict }: { verdict?: string }) {
 }
 
 export default function Home() {
-  // Bring-your-own Gemini key (stored only in this browser)
+  // Provider + bring-your-own key (stored only in this browser)
+  const [provider, setProvider] = useState<Provider>("gemini");
   const [apiKey, setApiKey] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [models, setModels] = useState<string[]>([]);
@@ -85,8 +93,8 @@ export default function Home() {
   const [asking, setAsking] = useState(false);
   const reportRef = useRef<HTMLDivElement>(null);
 
-  // Validate the key against Gemini (lists models — no token cost)
-  async function checkKey(key: string) {
+  // Validate the key for the selected provider (lists models — no token cost)
+  async function checkKey(prov: Provider, key: string) {
     if (!key.trim()) {
       setConn({ status: "idle" });
       return;
@@ -96,7 +104,7 @@ export default function Home() {
       const res = await fetch("/api/check", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ apiKey: key }),
+        body: JSON.stringify({ provider: prov, apiKey: key }),
       });
       const data = await res.json();
       if (data.ok) {
@@ -104,12 +112,7 @@ export default function Home() {
         setModels(list);
         setModel((cur) => {
           if (cur && list.includes(cur)) return cur;
-          const flash =
-            list.find((m) => /flash/i.test(m) && !/(thinking|exp|preview|lite)/i.test(m)) ||
-            list.find((m) => /flash/i.test(m)) ||
-            list[0] ||
-            "";
-          return flash;
+          return pickDefaultModel(prov, list);
         });
         setConn({ status: "ok" });
       } else {
@@ -120,27 +123,71 @@ export default function Home() {
     }
   }
 
-  // Load saved key/model on mount and auto-verify
+  // Prefer cheap/fast free-friendly models per provider
+  function pickDefaultModel(prov: Provider, list: string[]): string {
+    if (prov === "gemini") {
+      return (
+        list.find((m) => /flash/i.test(m) && !/lite/i.test(m) && !/(exp|preview|thinking|image|tts|live|audio)/i.test(m)) ||
+        list.find((m) => /flash.*lite/i.test(m) && !/(exp|preview)/i.test(m)) ||
+        list.find((m) => /flash/i.test(m)) ||
+        list.find((m) => !/(pro|embedding|aqa|imagen|veo|tts|image)/i.test(m)) ||
+        list[0] || ""
+      );
+    }
+    if (prov === "openai") {
+      return (
+        list.find((m) => /^gpt-4o-mini/i.test(m)) ||
+        list.find((m) => /mini/i.test(m)) ||
+        list.find((m) => /^gpt-4o/i.test(m)) ||
+        list[0] || ""
+      );
+    }
+    // anthropic
+    return (
+      list.find((m) => /haiku/i.test(m) && /latest/i.test(m)) ||
+      list.find((m) => /haiku/i.test(m)) ||
+      list.find((m) => /sonnet/i.test(m)) ||
+      list[0] || ""
+    );
+  }
+
+  // Load saved provider/key/model on mount and auto-verify
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const k = window.localStorage.getItem("zfd_key") || "";
-    const m = window.localStorage.getItem("zfd_model") || "";
+    const p = (window.localStorage.getItem("zfd_provider") as Provider) || "gemini";
+    const k = window.localStorage.getItem(`zfd_key_${p}`) || "";
+    const m = window.localStorage.getItem(`zfd_model_${p}`) || "";
+    setProvider(p);
     if (m) setModel(m);
     if (k) {
       setApiKey(k);
-      checkKey(k);
+      checkKey(p, k);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    if (model && typeof window !== "undefined") window.localStorage.setItem("zfd_model", model);
-  }, [model]);
+    if (model && typeof window !== "undefined")
+      window.localStorage.setItem(`zfd_model_${provider}`, model);
+  }, [model, provider]);
+
+  function onProviderChange(p: Provider) {
+    setProvider(p);
+    setConn({ status: "idle" });
+    setModels([]);
+    if (typeof window !== "undefined") window.localStorage.setItem("zfd_provider", p);
+    // restore that provider's saved key/model, if any
+    const k = typeof window !== "undefined" ? window.localStorage.getItem(`zfd_key_${p}`) || "" : "";
+    const m = typeof window !== "undefined" ? window.localStorage.getItem(`zfd_model_${p}`) || "" : "";
+    setApiKey(k);
+    setModel(m);
+    if (k) checkKey(p, k);
+  }
 
   function onKeyChange(v: string) {
     setApiKey(v);
     setConn({ status: "idle" });
-    if (typeof window !== "undefined") window.localStorage.setItem("zfd_key", v);
+    if (typeof window !== "undefined") window.localStorage.setItem(`zfd_key_${provider}`, v);
   }
 
   function reset() {
@@ -193,7 +240,7 @@ export default function Home() {
       const res = await fetch("/api/diagnose", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ log, datasheet, apiKey, model }),
+        body: JSON.stringify({ log, datasheet, apiKey, model, provider }),
       });
       if (!res.body) throw new Error("No response stream");
       const reader = res.body.getReader();
@@ -234,7 +281,7 @@ export default function Home() {
       const res = await fetch("/api/ask", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ question: q, log, datasheet, diagnosis: report.diagnosis, apiKey, model }),
+        body: JSON.stringify({ question: q, log, datasheet, diagnosis: report.diagnosis, apiKey, model, provider }),
       });
       const data = await res.json();
       setQa((prev) =>
@@ -269,10 +316,10 @@ export default function Home() {
       <main className="max-w-6xl mx-auto px-5 py-6 grid lg:grid-cols-[360px_1fr] gap-6">
         {/* SOURCES PANEL */}
         <section className="space-y-4">
-          {/* API KEY + CONNECTION */}
+          {/* PROVIDER + API KEY + CONNECTION */}
           <div className="rounded-xl border border-line bg-panel p-4">
             <div className="flex items-center justify-between mb-2">
-              <h2 className="text-xs uppercase tracking-wider text-muted">Gemini API key</h2>
+              <h2 className="text-xs uppercase tracking-wider text-muted">Model provider</h2>
               <span className="flex items-center gap-1.5 text-[11px] font-mono">
                 <span
                   className={`w-2 h-2 rounded-full ${
@@ -304,14 +351,27 @@ export default function Home() {
                 </span>
               </span>
             </div>
+
+            <select
+              value={provider}
+              onChange={(e) => onProviderChange(e.target.value as Provider)}
+              className="w-full bg-base border border-line rounded-lg px-3 py-2 text-[13px] outline-none focus:border-trace/50 mb-2"
+            >
+              {PROVIDER_UI.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+
             <div className="flex gap-2">
               <div className="relative flex-1">
                 <input
                   type={showKey ? "text" : "password"}
                   value={apiKey}
                   onChange={(e) => onKeyChange(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && checkKey(apiKey)}
-                  placeholder="AIza…"
+                  onKeyDown={(e) => e.key === "Enter" && checkKey(provider, apiKey)}
+                  placeholder={`${PROVIDER_UI.find((p) => p.id === provider)?.hint} — paste your key`}
                   spellCheck={false}
                   className="w-full bg-base border border-line rounded-lg pl-3 pr-12 py-2 font-mono text-[12px] outline-none focus:border-trace/50"
                 />
@@ -324,7 +384,7 @@ export default function Home() {
                 </button>
               </div>
               <button
-                onClick={() => checkKey(apiKey)}
+                onClick={() => checkKey(provider, apiKey)}
                 disabled={conn.status === "checking" || !apiKey.trim()}
                 className="px-3 rounded-lg border border-line text-trace text-sm hover:bg-trace/10 disabled:opacity-40"
               >
@@ -351,14 +411,14 @@ export default function Home() {
               </div>
             )}
             <p className="text-faint text-[10px] mt-2">
-              Your key stays in this browser and is sent only to Gemini.{" "}
+              Your key stays in this browser and is sent only to the provider.{" "}
               <a
-                href="https://aistudio.google.com/apikey"
+                href={PROVIDER_UI.find((p) => p.id === provider)?.url}
                 target="_blank"
                 rel="noreferrer"
                 className="text-trace hover:underline"
               >
-                Get a free key
+                Get a key
               </a>
             </p>
           </div>
